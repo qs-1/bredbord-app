@@ -153,9 +153,13 @@ async function forgetGoogle(revoke: boolean): Promise<void> {
 }
 
 /** Names are plain lower-case letters, digits and underscores, 3 to 20 long (as the database checks). */
-export const cleanName = (name: string): string => name.trim().toLowerCase().replace(/\s+/g, '_');
+export const cleanName = (name: string): string => typingName(name).trim();
+/** While typing: lower case and one space between words, a space at the end kept so the next word can follow. */
+export const typingName = (name: string): string => name.toLowerCase().replace(/\s+/g, ' ').replace(/^ /, '');
 export const nameProblem = (name: string): string | null =>
-  /^[a-z0-9_]{3,20}$/.test(name) ? null : 'Use 3 to 20 letters, numbers or _';
+  name.length >= 3 && name.length <= 20 && /^[a-z0-9_]+( [a-z0-9_]+)*$/.test(name)
+    ? null
+    : 'Use 3 to 20 letters, numbers, spaces or _';
 
 /** The first time: a name, and a part picture at random. */
 export async function createProfile(name: string): Promise<void> {

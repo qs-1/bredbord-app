@@ -10,7 +10,7 @@ import type { Screens } from '../../App';
 import { expo } from '../../app.json';
 import {
   changeName,
-  cleanName,
+  typingName,
   deleteAccount,
   nameProblem,
   PICTURES,
@@ -211,7 +211,7 @@ export function You({ navigation }: NativeStackScreenProps<Screens, 'You'>) {
         <TextInput
           style={s.input}
           value={name}
-          onChangeText={(t) => setName(cleanName(t))}
+          onChangeText={(t) => setName(typingName(t))}
           autoCapitalize="none"
           autoCorrect={false}
           maxLength={20}

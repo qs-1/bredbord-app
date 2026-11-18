@@ -3,7 +3,7 @@
 // someone is signed in without one and no sheet is showing (the app closed before they picked one).
 import { useEffect, useState } from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
-import { canSignIn, cleanName, createProfile, nameProblem, signInWithGoogle, useAccount } from './account';
+import { canSignIn, typingName, createProfile, nameProblem, signInWithGoogle, useAccount } from './account';
 import { C, F } from './theme';
 import { BottomSheet, Button } from './ui';
 
@@ -88,8 +88,8 @@ export function SignInSheet({
             <TextInput
               style={s.input}
               value={name}
-              onChangeText={(t) => setName(cleanName(t))}
-              placeholder="your_name"
+              onChangeText={(t) => setName(typingName(t))}
+              placeholder="your name"
               placeholderTextColor={C.ink3}
               autoCapitalize="none"
               autoCorrect={false}
