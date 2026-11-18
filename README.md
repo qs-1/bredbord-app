@@ -4,6 +4,10 @@ A breadboard and circuit simulator for Android. The desk and the simulator are s
 [Bredbord](https://github.com/qs-1/bredbord), the website; how the two fit together is in
 [ARCHITECTURE.md](ARCHITECTURE.md).
 
+<img src="docs/screenshots/simulator.jpg" width="240" alt="The simulator"> <img src="docs/screenshots/community.jpg" width="240" alt="Community"> <img src="docs/screenshots/profile.jpg" width="240" alt="A person's page">
+
+Get the app from [Releases](https://github.com/qs-1/bredbord-app/releases/latest) (64-bit Android phones).
+
 ## Build
 
 Needs Node 22+, Java 21 and the Android SDK.
