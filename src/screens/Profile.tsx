@@ -20,11 +20,17 @@ type CardAt = { x: number; y: number; width: number; height: number };
 const joined = (iso: string): string =>
   `Joined ${new Date(iso).toLocaleDateString('en-GB', { month: 'long', year: 'numeric' })}`;
 
+// What each person's page showed last, so opening it again shows that straight away (not 0, then the
+// real counts) while the newest copy loads.
+const seen = new Map<string, { who: Person; circuits: RemoteCircuit[] }>();
+
 export function Profile({ navigation, route }: NativeStackScreenProps<Screens, 'Profile'>) {
   const insets = useSafeAreaInsets();
   const { columns, cardWidth } = useColumns();
-  const [who, setWho] = useState<Person | null | undefined>(undefined);
-  const [circuits, setCircuits] = useState<RemoteCircuit[]>([]);
+  const last = seen.get(route.params.username);
+  const [who, setWho] = useState<Person | null | undefined>(last?.who);
+  // null until loaded: the counts stay blank instead of showing 0.
+  const [circuits, setCircuits] = useState<RemoteCircuit[] | null>(last?.circuits ?? null);
   const account = useAccount();
   const mine = !!account.profile && account.profile.username === route.params.username;
   const [menu, setMenu] = useState<{ items: MenuItem[]; card: CardProps; at: CardAt } | null>(null);
@@ -41,13 +47,17 @@ export function Profile({ navigation, route }: NativeStackScreenProps<Screens, '
   useEffect(() => {
     void profileByName(route.params.username).then(async (p) => {
       setWho(p);
-      if (p) setCircuits(await feed({ sort: 'popular', owner: p.id }).catch(() => []));
+      if (!p) return seen.delete(route.params.username);
+      const list = await feed({ sort: 'popular', owner: p.id }).catch(() => null);
+      const now = list ?? seen.get(route.params.username)?.circuits ?? [];
+      seen.set(route.params.username, { who: p, circuits: now });
+      setCircuits(now);
     });
   }, [route.params.username]);
-  useEffect(() => onLeftCommunity((gone) => setCircuits((now) => now.filter((r) => r.id !== gone))), []);
+  useEffect(() => onLeftCommunity((gone) => setCircuits((now) => now && now.filter((r) => r.id !== gone))), []);
 
-  const likes = circuits.reduce((n, c) => n + c.like_count, 0);
-  const remixes = circuits.reduce((n, c) => n + c.remix_count, 0);
+  const likes = circuits?.reduce((n, c) => n + c.like_count, 0);
+  const remixes = circuits?.reduce((n, c) => n + c.remix_count, 0);
 
   return (
     <View style={[s.screen, { paddingTop: insets.top }]}>
@@ -61,7 +71,7 @@ export function Profile({ navigation, route }: NativeStackScreenProps<Screens, '
       ) : (
         <FlatList
           key={`profile-${columns}`}
-          data={circuits}
+          data={circuits ?? []}
           keyExtractor={(c) => c.id}
           numColumns={columns}
           columnWrapperStyle={s.gridRow}
@@ -74,7 +84,7 @@ export function Profile({ navigation, route }: NativeStackScreenProps<Screens, '
                 <Text style={s.name}>{who.username}</Text>
                 <Text style={s.sub}>{joined(who.created_at)}</Text>
                 <View style={s.counts}>
-                  <Count n={circuits.length} label="circuits" />
+                  <Count n={circuits?.length} label="circuits" />
                   <Count n={likes} label="likes" />
                   <Count n={remixes} label="remixes" />
                 </View>
@@ -109,10 +119,10 @@ export function Profile({ navigation, route }: NativeStackScreenProps<Screens, '
   );
 }
 
-function Count({ n, label }: { n: number; label: string }) {
+function Count({ n, label }: { n: number | undefined; label: string }) {
   return (
     <View style={{ alignItems: 'center' }}>
-      <Text style={s.countN}>{n}</Text>
+      <Text style={s.countN}>{n ?? ' '}</Text>
       <Text style={s.sub}>{label}</Text>
     </View>
   );

@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { alert, note } from '../dialog';
 import { ActivityIndicator, Linking, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { Icon } from '../Px';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { Screens } from '../../App';
 import { expo } from '../../app.json';
@@ -148,14 +149,22 @@ export function You({ navigation }: NativeStackScreenProps<Screens, 'You'>) {
               <Row
                 first
                 label="Sign out"
+                left={<Icon name="signout" color={C.ink2} />}
                 onPress={() =>
-                  void signOut()
-                    .then(() => {
-                      // Back to the start, as after any sign-out.
-                      navigation.popToTop();
-                      note('Signed out');
-                    })
-                    .catch(() => note('That didn’t work. Try again'))
+                  alert('Sign out?', 'Your circuits stay in your account. Sign in again to get them back here.', [
+                    { text: 'Cancel', style: 'cancel' },
+                    {
+                      text: 'Sign out',
+                      onPress: () =>
+                        void signOut()
+                          .then(() => {
+                            // Back to the start, as after any sign-out.
+                            navigation.popToTop();
+                            note('Signed out');
+                          })
+                          .catch(() => note('That didn’t work. Try again')),
+                    },
+                  ])
                 }
               />
             </Group>

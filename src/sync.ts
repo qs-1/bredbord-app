@@ -46,11 +46,22 @@ function signedIn(): { uid: string } | null {
   return supabase && session && profile ? { uid: session.user.id } : null;
 }
 
+// One save at a time per circuit. Sharing, leaving the desk and the timed sync can each ask at once;
+// two at once for a circuit not in the account yet each added it, so it was shared twice.
+const pushing = new Map<string, Promise<void>>();
+
 /**
  * Saves one circuit to the account: its row, then its picture if that changed. Throws with the
  * reason when it couldn't. A circuit with nothing on it yet waits until it has something.
  */
-export async function push(id: string): Promise<void> {
+export function push(id: string): Promise<void> {
+  const next = (pushing.get(id) ?? Promise.resolve()).catch(() => undefined).then(() => pushOne(id));
+  pushing.set(id, next);
+  void next.finally(() => pushing.get(id) === next && pushing.delete(id)).catch(() => undefined);
+  return next;
+}
+
+async function pushOne(id: string): Promise<void> {
   const me = signedIn();
   if (!supabase || !me) throw new Error('Sign in first');
   const sb = supabase;
