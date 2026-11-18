@@ -1,0 +1,6 @@
+android/
+ios/
+.expo/
+assets/desk.html
+src/generated/
+package-lock.json
