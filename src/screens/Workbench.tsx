@@ -23,7 +23,7 @@ import * as Haptics from 'expo-haptics';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { Screens } from '../../App';
-import { createCircuit, freeName, readCircuit, saveCircuit, savePicture, updateCircuit } from '../circuits';
+import { createCircuit, freeName, getCircuit, readCircuit, saveCircuit, savePicture, updateCircuit } from '../circuits';
 import { getShared } from '../community';
 import { syncOnline } from '../sync';
 import { EXAMPLES } from '../examples';
@@ -123,6 +123,10 @@ export function Workbench({ navigation, route }: NativeStackScreenProps<Screens,
   const [state, setState] = useState<DeskState>(IDLE);
   const [partsOpen, setPartsOpen] = useState(false);
   const [colours, setColours] = useState(false);
+  // Framing the circuit's picture: the person moves the desk's view, and the picture keeps the 4:3 frame drawn over it.
+  const [framing, setFraming] = useState(false);
+  const [framed, setFramed] = useState(false);
+  const [deskSize, setDeskSize] = useState({ w: 0, h: 0 });
   const [deskNote, setDeskNote] = useState('');
   const deskNoteA = useRef(new Animated.Value(0)).current;
   const deskNoteTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -145,14 +149,32 @@ export function Workbench({ navigation, route }: NativeStackScreenProps<Screens,
     web.current?.injectJavaScript(`window.bredbord&&window.bredbord.send(${JSON.stringify(message)});true;`);
   }, []);
 
+  // Changed by hand since the picture was last taken.
+  const edited = useRef(false);
+
+  // The circuit's picture is taken from above, and only when there's something new to show: it
+  // changed since the last one, or it has none. A picture the person framed is left alone.
+  // Resolves to whether the desk was asked.
+  const refreshPicture = useCallback(async (): Promise<boolean> => {
+    const to = await saved.current;
+    if (!to) return false;
+    const info = await getCircuit(to);
+    if (!info || info.pictureCustom) return false;
+    if (!edited.current && info.picture) return false;
+    edited.current = false;
+    send({ type: 'picture', view: 'top' });
+    return true;
+  }, [send]);
+
   const leave = useCallback((): void => {
     if (leaving.current) return;
     leaving.current = true;
-    // One picture for the home screen on the way out; leave anyway if the desk doesn't answer.
     send({ type: 'deselect' });
-    send({ type: 'picture' });
-    setTimeout(() => navigation.goBack(), 350);
-  }, [navigation, send]);
+    // The picture for the home screen is the last thing on the way out; leave anyway if the desk
+    // doesn't answer. With nothing changed there's nothing to wait for.
+    const waited = edited.current;
+    void refreshPicture().then((asked) => setTimeout(() => navigation.goBack(), asked || waited ? 350 : 0));
+  }, [navigation, send, refreshPicture]);
 
   // A new circuit is kept once something is put on it; an example or someone's shared circuit
   // becomes the user's own as a remix of it.
@@ -178,8 +200,8 @@ export function Workbench({ navigation, route }: NativeStackScreenProps<Screens,
   const share = async (): Promise<void> => {
     if (!saved.current) return say('Put something on the desk first, then share it');
     const to = await saved.current;
-    // A fresh picture for its card in Community.
-    send({ type: 'picture' });
+    // A current picture for its card in Community.
+    void refreshPicture();
     setShareId(to);
   };
 
@@ -193,6 +215,31 @@ export function Workbench({ navigation, route }: NativeStackScreenProps<Screens,
     // when it's kept.
     if (!saved.current && fresh) saved.current = createCircuit(next).then((info) => info.id);
     else void saved.current?.then((to) => updateCircuit(to, { name: next }));
+  };
+
+  const startFraming = async (): Promise<void> => {
+    if (!saved.current) return say('Put something on the desk first');
+    send({ type: 'cancel' });
+    send({ type: 'deselect' });
+    parts.current?.go(0);
+    const info = await getCircuit(await saved.current);
+    setFramed(!!info?.pictureCustom);
+    setFraming(true);
+  };
+  // The picture is the 4:3 middle of the desk, as the desk draws it (see `picture` in the website's view.ts).
+  const frame = useMemo(() => {
+    const { w, h } = deskSize;
+    const cw = w / h < 4 / 3 ? w : (h * 4) / 3;
+    const ch = (cw * 3) / 4;
+    return { w: cw, h: ch, x: (w - cw) / 2, y: (h - ch) / 2 };
+  }, [deskSize]);
+  const takeFramed = (): void => {
+    send({ type: 'picture', view: 'current' });
+    setFraming(false);
+  };
+  const resetFramed = (): void => {
+    send({ type: 'picture', view: 'top' });
+    setFraming(false);
   };
 
   const deskSettings = useCallback(() => {
@@ -233,6 +280,7 @@ export function Workbench({ navigation, route }: NativeStackScreenProps<Screens,
         if (keep && !saved.current) saved.current = keepExample(m.doc);
         return;
       case 'bump': {
+        edited.current = true;
         const now = Date.now();
         if (getSettings().vibrate && now - lastBump.current > 80) void Haptics.selectionAsync();
         lastBump.current = now;
@@ -249,7 +297,9 @@ export function Workbench({ navigation, route }: NativeStackScreenProps<Screens,
         return;
       case 'picture':
         // The picture is the last thing on the way out; a shared circuit's online copy follows.
-        void saved.current?.then((to) => savePicture(to, m.jpeg as string).then(() => syncOnline(to)));
+        void saved.current?.then((to) =>
+          savePicture(to, m.jpeg as string, m.view === 'current').then(() => syncOnline(to)),
+        );
         return;
       case 'toast':
         // The desk's own messages ("No hole for the other leg there") show on the desk, at the top.
@@ -264,7 +314,8 @@ export function Workbench({ navigation, route }: NativeStackScreenProps<Screens,
   // Back shuts what's open, one thing at a time, and then leaves.
   useEffect(() => {
     const sub = BackHandler.addEventListener('hardwareBackPress', () => {
-      if (colours) setColours(false);
+      if (framing) setFraming(false);
+      else if (colours) setColours(false);
       else if (partsOpen) parts.current?.go(0);
       else if (state.task) send({ type: 'cancel' });
       else if (state.selection) send({ type: 'deselect' });
@@ -272,7 +323,7 @@ export function Workbench({ navigation, route }: NativeStackScreenProps<Screens,
       return true;
     });
     return () => sub.remove();
-  }, [colours, partsOpen, state.task, state.selection, send, leave]);
+  }, [framing, colours, partsOpen, state.task, state.selection, send, leave]);
 
   const partStops = useMemo(() => [0, 320, 560] as const, []);
   // What floats over the desk sits above the tool bar.
@@ -316,7 +367,10 @@ export function Workbench({ navigation, route }: NativeStackScreenProps<Screens,
         </Pressable>
       </View>
 
-      <View style={s.desk}>
+      <View
+        style={s.desk}
+        onLayout={(e) => setDeskSize({ w: e.nativeEvent.layout.width, h: e.nativeEvent.layout.height })}
+      >
         {uri && (
           <WebView<object>
             ref={web}
@@ -357,7 +411,41 @@ export function Workbench({ navigation, route }: NativeStackScreenProps<Screens,
           <Pressable style={s.viewBtn} onPress={() => send({ type: 'fit' })}>
             <Icon name="fit" color={C.ink} />
           </Pressable>
+          <View style={s.viewLine} />
+          <Pressable style={s.viewBtn} onPress={() => void startFraming()} accessibilityLabel="Set the preview picture">
+            <Icon name="marquee" color={C.ink} />
+          </Pressable>
         </View>
+        {framing && (
+          <>
+            <View pointerEvents="none" style={[s.dim, { left: 0, right: 0, top: 0, height: frame.y }]} />
+            <View pointerEvents="none" style={[s.dim, { left: 0, right: 0, bottom: 0, top: frame.y + frame.h }]} />
+            <View pointerEvents="none" style={[s.dim, { left: 0, width: frame.x, top: frame.y, height: frame.h }]} />
+            <View pointerEvents="none" style={[s.dim, { right: 0, width: frame.x, top: frame.y, height: frame.h }]} />
+            <View
+              pointerEvents="none"
+              style={[s.frameLine, { left: frame.x, top: frame.y, width: frame.w, height: frame.h }]}
+            />
+            <Reanimated.View
+              entering={RISE}
+              exiting={SINK}
+              style={[s.hint, { bottom: above, flexWrap: 'wrap', justifyContent: 'flex-end' }]}
+            >
+              <Text style={[s.hintText, { flexBasis: '100%' }]}>Move the view so the preview shows what you want</Text>
+              <Pressable style={s.hintCancel} onPress={() => setFraming(false)}>
+                <Text style={s.hintCancelText}>Cancel</Text>
+              </Pressable>
+              {framed && (
+                <Pressable style={s.hintCancel} onPress={resetFramed}>
+                  <Text style={s.hintCancelText}>Reset</Text>
+                </Pressable>
+              )}
+              <Pressable style={s.hintCancel} onPress={takeFramed}>
+                <Text style={[s.hintCancelText, { color: '#fff' }]}>Use this view</Text>
+              </Pressable>
+            </Reanimated.View>
+          </>
+        )}
         {!!state.task && (
           <Reanimated.View entering={RISE} exiting={SINK} style={[s.hint, { bottom: above }]}>
             <Text style={s.hintText}>{state.task}</Text>
@@ -548,6 +636,8 @@ const s = StyleSheet.create({
   },
   viewBtn: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
   viewLine: { height: 1, backgroundColor: C.line },
+  dim: { position: 'absolute', backgroundColor: 'rgba(20,20,20,0.45)' },
+  frameLine: { position: 'absolute', borderWidth: 2, borderColor: '#fff' },
   deskNote: {
     position: 'absolute',
     top: 12,
