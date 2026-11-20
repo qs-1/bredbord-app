@@ -32,6 +32,11 @@ const fromOnline = (v: string): Visibility => (v === 'link' || v === 'public' ? 
 
 const same = (a: string[], b: string[]): boolean => a.length === b.length && a.every((t, i) => t === b[i]);
 
+let pictureCustomColumnMissing = false;
+function missingPictureCustomColumn(error: { code?: string; message?: string } | null): boolean {
+  return !!error && ['42703', 'PGRST204'].includes(error.code ?? '') && /picture_custom/i.test(error.message ?? '');
+}
+
 /** The JPEG's bytes. An ArrayBuffer: on the phone, Supabase's upload sends a Uint8Array as nothing. */
 function jpegBytes(dataUrl: string): ArrayBuffer {
   const raw = atob(dataUrl.slice(dataUrl.indexOf(',') + 1));
@@ -78,23 +83,40 @@ async function pushOne(id: string): Promise<void> {
     doc,
     visibility: toOnline(info.visibility),
   };
+  const fieldsWithPictureCustom = { ...fields, picture_custom: info.pictureCustom };
+  const writeFields = pictureCustomColumnMissing ? fields : fieldsWithPictureCustom;
 
   let remote = info.remote?.owner === me.uid ? info.remote : null;
   let stamp = '';
   if (remote) {
-    const { data, error } = await sb.from('circuits').update(fields).eq('id', remote.id).select('updated_at');
+    let { data, error } = await sb.from('circuits').update(writeFields).eq('id', remote.id).select('updated_at');
+    if (missingPictureCustomColumn(error)) {
+      pictureCustomColumnMissing = true;
+      ({ data, error } = await sb.from('circuits').update(fields).eq('id', remote.id).select('updated_at'));
+    }
     if (error) throw error;
     // Deleted from the account elsewhere while it was changed here: it goes back up as new.
     if (data?.length) stamp = data[0].updated_at as string;
     else remote = null;
   }
   if (!remote) {
-    const { data, error } = await sb
+    let { data, error } = await sb
       .from('circuits')
-      .insert({ ...fields, remix_of: info.remixOf?.remote ?? null, is_remix: !!info.remixOf })
+      .insert({ ...writeFields, remix_of: info.remixOf?.remote ?? null, is_remix: !!info.remixOf })
       .select('id, link_code, updated_at')
       .single();
+    if (missingPictureCustomColumn(error)) {
+      pictureCustomColumnMissing = true;
+      const legacy = await sb
+        .from('circuits')
+        .insert({ ...fields, remix_of: info.remixOf?.remote ?? null, is_remix: !!info.remixOf })
+        .select('id, link_code, updated_at')
+        .single();
+      data = legacy.data as typeof data;
+      error = legacy.error;
+    }
     if (error) throw error;
+    if (!data) throw new Error('Circuit could not be saved');
     remote = { id: data.id as string, code: data.link_code as string, owner: me.uid };
     stamp = data.updated_at as string;
   }
@@ -143,12 +165,17 @@ async function flushGone(uid: string): Promise<void> {
 async function pull(uid: string): Promise<void> {
   if (!supabase) return;
   const sb = supabase;
-  const { data, error } = await sb
-    .from('circuits')
-    .select(
-      'id, link_code, title, description, tags, parts, picture_path, visibility, remix_of, is_remix, created_at, updated_at',
-    )
-    .eq('owner', uid);
+  // Recheck on pulls so the flag starts syncing after the migration is applied.
+  pictureCustomColumnMissing = false;
+  const columns =
+    'id, link_code, title, description, tags, parts, picture_path, visibility, remix_of, is_remix, created_at, updated_at';
+  let { data, error } = await sb.from('circuits').select(`${columns}, picture_custom`).eq('owner', uid);
+  if (missingPictureCustomColumn(error)) {
+    pictureCustomColumnMissing = true;
+    const legacy = await sb.from('circuits').select(columns).eq('owner', uid);
+    data = legacy.data as typeof data;
+    error = legacy.error;
+  }
   if (error) throw error;
   const rows = data ?? [];
   const mine = (await allCircuits()).filter((c) => c.owner === uid);
@@ -192,6 +219,7 @@ async function pull(uid: string): Promise<void> {
       remote: { id: r.id as string, code: r.link_code as string, owner: uid },
       synced: r.updated_at as string,
       owner: uid,
+      pictureCustom: pictureCustomColumnMissing ? (here?.pictureCustom ?? false) : r.picture_custom === true,
       doc: full.doc,
       picture,
       created: new Date(r.created_at as string).getTime(),

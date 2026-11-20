@@ -281,7 +281,7 @@ export async function fromAccount(
   id: string | null,
   data: Pick<
     CircuitInfo,
-    'name' | 'description' | 'tags' | 'visibility' | 'remixOf' | 'remote' | 'synced' | 'owner'
+    'name' | 'description' | 'tags' | 'visibility' | 'remixOf' | 'remote' | 'synced' | 'owner' | 'pictureCustom'
   > & {
     doc: unknown;
     picture: string | null;
