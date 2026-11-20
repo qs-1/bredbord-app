@@ -28,6 +28,8 @@ export interface CircuitInfo {
   changed: number;
   /** Bumped whenever the picture is retaken, so the home screen knows to read it again. */
   picture: number;
+  /** The picture was framed by the person, so it isn't retaken from above when the circuit changes. */
+  pictureCustom: boolean;
   /** The account (its user id) that keeps it, or null: made while signed out, on this phone only. */
   owner: string | null;
   /** Changed since it was last saved to the account. */
@@ -74,6 +76,7 @@ function upgrade(c: Partial<CircuitInfo> & { id: string; name: string }): Circui
     created: now,
     changed: now,
     picture: 0,
+    pictureCustom: false,
     // Shared before accounts kept everything: it's that account's.
     owner: c.remote?.owner ?? null,
     dirty: true,
@@ -195,14 +198,14 @@ export async function duplicateCircuit(id: string): Promise<CircuitInfo | null> 
     remixOf: from.remixOf,
   });
   const picture = await readPicture(id);
-  if (picture) await savePicture(copy.id, picture);
+  if (picture) await savePicture(copy.id, picture, from.pictureCustom);
   return copy;
 }
 
-/** `jpeg` is a data URL. */
-export async function savePicture(id: string, jpeg: string): Promise<void> {
+/** `jpeg` is a data URL; `custom` when the person framed it (otherwise it's the automatic one, from above). */
+export async function savePicture(id: string, jpeg: string, custom = false): Promise<void> {
   await AsyncStorage.setItem(pictureKey(id), jpeg);
-  await change(id, () => ({ picture: Date.now() }));
+  await change(id, () => ({ picture: Date.now(), pictureCustom: custom }));
 }
 
 export function readPicture(id: string): Promise<string | null> {
