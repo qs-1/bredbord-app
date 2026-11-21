@@ -130,6 +130,32 @@ function Tool({
   );
 }
 
+/**
+ * A pin's name, with its bar (written Q̄0 with a combining macron) drawn as a line over the whole
+ * name it covers, as datasheets do, rather than left to the font, which puts it over the wrong letter.
+ */
+function PinName({ name }: { name: string }) {
+  const m = /([A-Za-z])̄([A-Za-z0-9]*)/.exec(name);
+  if (!m) {
+    return (
+      <Text style={s.pinName} numberOfLines={1}>
+        {name}
+      </Text>
+    );
+  }
+  const before = name.slice(0, m.index);
+  const after = name.slice(m.index + m[0].length);
+  return (
+    <View style={s.pinNameRow}>
+      {!!before && <Text style={s.pinName}>{before}</Text>}
+      <View style={s.pinBar}>
+        <Text style={s.pinName}>{m[1] + m[2]}</Text>
+      </View>
+      {!!after && <Text style={s.pinName}>{after}</Text>}
+    </View>
+  );
+}
+
 /** A part's pins: a chip drawn from above (pin 1 top left, the notch at the top), or a list. A tap lights that pin's hole. */
 function PinDiagram({ pins, lit, onPin }: { pins: DeskPins; lit: number | null; onPin: (i: number) => void }) {
   const pin = (i: number, side: 'l' | 'r' | 'list') => {
@@ -141,9 +167,7 @@ function PinDiagram({ pins, lit, onPin }: { pins: DeskPins; lit: number | null; 
         style={[s.pin, side === 'l' && { justifyContent: 'flex-end' }, lit === i && s.pinLit]}
       >
         {side !== 'l' && num}
-        <Text style={s.pinName} numberOfLines={1}>
-          {pins.names[i]}
-        </Text>
+        <PinName name={pins.names[i]} />
         {side === 'l' && num}
       </Pressable>
     );
@@ -986,4 +1010,6 @@ const s = StyleSheet.create({
   pinLit: { backgroundColor: '#fbefd2' },
   pinNum: { fontFamily: F.mono, fontSize: 11, color: C.ink3, minWidth: 16, textAlign: 'center' },
   pinName: { fontFamily: F.regular, fontSize: 13, color: C.ink, flexShrink: 1 },
+  pinNameRow: { flexDirection: 'row', alignItems: 'center' },
+  pinBar: { borderTopWidth: 1, borderTopColor: C.ink, marginTop: 1 },
 });
