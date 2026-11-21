@@ -15,6 +15,7 @@ import {
   useWindowDimensions,
 } from 'react-native';
 import Reanimated, { FadeInDown, FadeOutDown } from 'react-native-reanimated';
+import { LegacyScrollView } from 'react-native-gesture-handler';
 import { SvgXml } from 'react-native-svg';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { WebView, type WebViewMessageEvent } from 'react-native-webview';
@@ -33,7 +34,15 @@ import { getSettings, useSettings } from '../settings';
 import { Sheet, type SheetHandle } from '../Sheet';
 import { C, F, R, WIRE, type WireColor } from '../theme';
 import { ShareSheet } from '../ShareSheet';
-import { BottomSheet, EASE, SheetHead } from '../ui';
+import { BottomSheet, Chip, EASE, IconButton, SheetHead } from '../ui';
+
+/** A setting of the selected part, to choose from (the desk's `options`, src/embed-options.ts in the main project). */
+interface DeskOption {
+  id: string;
+  label: string;
+  choices: { value: string; label: string }[];
+  current: string;
+}
 
 interface DeskState {
   selection: { title: string; count: number } | null;
@@ -44,6 +53,8 @@ interface DeskState {
   canUndo: boolean;
   canRedo: boolean;
   top: boolean;
+  /** Settings of the one selected part; absent from desks built before they were sent. */
+  options?: DeskOption[];
 }
 
 const IDLE: DeskState = {
@@ -71,6 +82,10 @@ function partRows(columns: number): PartRow[] {
 }
 
 const TOOLS_HEIGHT = 60;
+
+/** The selection sheet: its grip and title row, and each option's row (a label over its choices). */
+const CARD_HEAD = 70;
+const OPTION_ROW = 64;
 
 /** How the colours panel and the hint come and go. */
 const RISE = FadeInDown.duration(220);
@@ -122,6 +137,8 @@ export function Workbench({ navigation, route }: NativeStackScreenProps<Screens,
   const card = useRef<SheetHandle>(null);
   const [state, setState] = useState<DeskState>(IDLE);
   const [partsOpen, setPartsOpen] = useState(false);
+  // The part picked from the parts sheet that's waiting to be put down, shown in the hint bar (a phone has no hover).
+  const [placing, setPlacing] = useState<Tile | null>(null);
   const [colours, setColours] = useState(false);
   // Framing the circuit's picture: the person moves the desk's view, and the picture keeps the 4:3 frame drawn over it.
   const [framing, setFraming] = useState(false);
@@ -308,8 +325,10 @@ export function Workbench({ navigation, route }: NativeStackScreenProps<Screens,
   };
 
   // The card comes up as a strip when something is selected and steps aside while something is put down.
+  useEffect(() => {
+    if (!state.task) setPlacing(null);
+  }, [state.task]);
   const showCard = !!state.selection && !state.task && !partsOpen;
-  useEffect(() => card.current?.go(showCard ? 1 : 0), [showCard]);
 
   // Back shuts what's open, one thing at a time, and then leaves.
   useEffect(() => {
@@ -328,7 +347,12 @@ export function Workbench({ navigation, route }: NativeStackScreenProps<Screens,
   const partStops = useMemo(() => [0, 320, 560] as const, []);
   // What floats over the desk sits above the tool bar.
   const above = TOOLS_HEIGHT + insets.bottom + 12;
-  const cardStops = useMemo(() => [0, 132] as const, []);
+  const options = state.selection && state.selection.count === 1 ? (state.options ?? []) : [];
+  const cardStops = useMemo(
+    () => [0, CARD_HEAD + options.length * OPTION_ROW + (options.length ? 12 : 4)] as const,
+    [options.length],
+  );
+  useEffect(() => card.current?.go(showCard ? 1 : 0), [showCard, cardStops]);
   const uri = assets?.[0]?.localUri;
 
   return (
@@ -448,7 +472,19 @@ export function Workbench({ navigation, route }: NativeStackScreenProps<Screens,
         )}
         {!!state.task && (
           <Reanimated.View entering={RISE} exiting={SINK} style={[s.hint, { bottom: above }]}>
-            <Text style={s.hintText}>{state.task}</Text>
+            {placing && (
+              <View style={s.hintThumb}>
+                <SvgXml xml={placing.svg} width={40} height={30} />
+              </View>
+            )}
+            <View style={s.hintBody}>
+              {placing && (
+                <Text style={s.hintName} numberOfLines={1}>
+                  {placing.name}
+                </Text>
+              )}
+              <Text style={[s.hintText, placing && s.hintTextSub]}>{state.task}</Text>
+            </View>
             <Pressable style={s.hintCancel} onPress={() => send({ type: 'cancel' })}>
               <Text style={s.hintCancelText}>Cancel</Text>
             </Pressable>
@@ -486,26 +522,32 @@ export function Workbench({ navigation, route }: NativeStackScreenProps<Screens,
             <Text style={s.cardTitle} numberOfLines={1}>
               {state.selection?.title ?? ''}
             </Text>
+            <IconButton icon="rotate" label="Rotate" onPress={() => send({ type: 'rotate' })} />
+            <IconButton icon="duplicate" label="Duplicate" onPress={() => send({ type: 'duplicate' })} />
+            <IconButton icon="trash" label="Delete" onPress={() => send({ type: 'delete' })} />
           </View>
         }
       >
-        <View style={s.actions}>
-          {(
-            [
-              ['rotate', 'Rotate'],
-              ['duplicate', 'Duplicate'],
-              ['trash', 'Delete'],
-            ] as const
-          ).map(([icon, label]) => (
-            <Pressable
-              key={label}
-              style={s.action}
-              onPress={() => send({ type: icon === 'trash' ? 'delete' : icon })}
-              android_ripple={{ color: C.press }}
-            >
-              <Icon name={icon} color={C.ink} />
-              <Text style={s.actionText}>{label}</Text>
-            </Pressable>
+        <View style={s.options}>
+          {options.map((o) => (
+            <View key={o.id} style={s.option}>
+              <Text style={s.optionLabel}>{o.label}</Text>
+              <LegacyScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                overScrollMode="never"
+                contentContainerStyle={s.optionChoices}
+              >
+                {o.choices.map((c) => (
+                  <Chip
+                    key={c.value}
+                    label={c.label}
+                    on={c.value === o.current}
+                    onPress={() => send({ type: 'option', id: o.id, value: c.value })}
+                  />
+                ))}
+              </LegacyScrollView>
+            </View>
           ))}
         </View>
       </Sheet>
@@ -533,6 +575,7 @@ export function Workbench({ navigation, route }: NativeStackScreenProps<Screens,
                       style={s.tile}
                       onPress={() => {
                         parts.current?.go(0);
+                        setPlacing(t);
                         send(t.send);
                       }}
                       android_ripple={{ color: C.press }}
@@ -666,7 +709,19 @@ const s = StyleSheet.create({
     paddingLeft: 16,
     paddingRight: 6,
   },
-  hintText: { flex: 1, fontFamily: F.regular, fontSize: 14, color: '#fff', paddingVertical: 10 },
+  hintThumb: {
+    width: 48,
+    height: 36,
+    borderRadius: 4,
+    backgroundColor: C.card,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 12,
+  },
+  hintBody: { flex: 1, paddingVertical: 8 },
+  hintName: { fontFamily: F.medium, fontSize: 14, color: '#fff' },
+  hintText: { fontFamily: F.regular, fontSize: 14, color: '#fff' },
+  hintTextSub: { fontSize: 13, color: '#d8d4cc' },
   hintCancel: { height: 36, paddingHorizontal: 12, justifyContent: 'center', borderRadius: 4 },
   hintCancelText: { fontFamily: F.medium, fontSize: 14, color: '#d8d4cc' },
   colours: {
@@ -740,20 +795,10 @@ const s = StyleSheet.create({
   },
   tileName: { fontFamily: F.medium, fontSize: 14, color: C.ink, textAlign: 'center' },
   tileSub: { fontFamily: F.regular, fontSize: 12, color: C.ink3, textAlign: 'center' },
-  cardHead: { paddingHorizontal: 16, paddingBottom: 8 },
-  cardTitle: { fontFamily: F.medium, fontSize: 16, color: C.ink },
-  actions: { flexDirection: 'row', paddingHorizontal: 8, paddingBottom: 12 },
-  action: {
-    flex: 1,
-    height: 52,
-    marginHorizontal: 4,
-    borderRadius: R.control,
-    borderWidth: 1,
-    borderColor: C.line2,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-  },
-  actionText: { fontFamily: F.medium, fontSize: 14, color: C.ink },
+  cardHead: { flexDirection: 'row', alignItems: 'center', paddingLeft: 16, paddingRight: 4, height: 48 },
+  cardTitle: { flex: 1, fontFamily: F.medium, fontSize: 16, color: C.ink },
+  options: { paddingBottom: 12 },
+  option: { height: 64, justifyContent: 'center' },
+  optionLabel: { fontFamily: F.regular, fontSize: 13, color: C.ink3, paddingLeft: 16, marginBottom: 6 },
+  optionChoices: { gap: 8, paddingHorizontal: 16 },
 });
