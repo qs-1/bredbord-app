@@ -34,18 +34,26 @@ import { getSettings, useSettings } from '../settings';
 import { Sheet, type SheetHandle } from '../Sheet';
 import { C, F, R, WIRE, type WireColor } from '../theme';
 import { ShareSheet } from '../ShareSheet';
-import { BottomSheet, Chip, EASE, IconButton, SheetHead } from '../ui';
+import { BottomSheet, Chip, EASE, SheetHead } from '../ui';
 
 /** A setting of the selected part, to choose from (the desk's `options`, src/embed-options.ts in the main project). */
 interface DeskOption {
   id: string;
   label: string;
-  choices: { value: string; label: string }[];
+  /** 'choice' (one of), 'swatch' (one of, as colours), 'toggles' (each on or off: `current` is a bit mask). */
+  look?: 'choice' | 'swatch' | 'toggles';
+  choices: { value: string; label: string; color?: string }[];
   current: string;
 }
 
+/** The selected part's pins, pin 1 first: 'dip' drawn as a chip from above, 'list' one under another. */
+interface DeskPins {
+  names: string[];
+  layout: 'dip' | 'list';
+}
+
 interface DeskState {
-  selection: { title: string; count: number } | null;
+  selection: { title: string; count: number; ref?: string; sub?: string } | null;
   task: string;
   wire: boolean;
   color: WireColor;
@@ -55,6 +63,8 @@ interface DeskState {
   top: boolean;
   /** Settings of the one selected part; absent from desks built before they were sent. */
   options?: DeskOption[];
+  /** The one selected part's pins, for its diagram. */
+  pins?: DeskPins | null;
 }
 
 const IDLE: DeskState = {
@@ -84,8 +94,11 @@ function partRows(columns: number): PartRow[] {
 const TOOLS_HEIGHT = 60;
 
 /** The selection sheet: its grip and title row, and each option's row (a label over its choices). */
-const CARD_HEAD = 70;
-const OPTION_ROW = 64;
+const CARD_HEAD = 58;
+const CARD_SUB = 20;
+const OPTION_ROW = 48;
+const PINS_ROW = 44;
+const PIN_ROW = 28;
 
 /** How the colours panel and the hint come and go. */
 const RISE = FadeInDown.duration(220);
@@ -113,6 +126,39 @@ function Tool({
         <Text style={[s.toolText, { color }]}>{label}</Text>
       </View>
     </Pressable>
+  );
+}
+
+/** A part's pins: a chip drawn from above (pin 1 top left, the notch at the top), or a list. A tap lights that pin's hole. */
+function PinDiagram({ pins, lit, onPin }: { pins: DeskPins; lit: number | null; onPin: (i: number) => void }) {
+  const pin = (i: number, side: 'l' | 'r' | 'list') => {
+    const num = <Text style={[s.pinNum, lit === i && { color: C.ink }]}>{i + 1}</Text>;
+    return (
+      <Pressable
+        key={i}
+        onPress={() => onPin(i)}
+        style={[s.pin, side === 'l' && { justifyContent: 'flex-end' }, lit === i && s.pinLit]}
+      >
+        {side !== 'l' && num}
+        <Text style={s.pinName} numberOfLines={1}>
+          {pins.names[i]}
+        </Text>
+        {side === 'l' && num}
+      </Pressable>
+    );
+  };
+  if (pins.layout === 'list') return <View style={s.pinList}>{pins.names.map((_, i) => pin(i, 'list'))}</View>;
+  const half = pins.names.length / 2;
+  const left = Array.from({ length: half }, (_, k) => k);
+  const right = Array.from({ length: half }, (_, k) => pins.names.length - 1 - k);
+  return (
+    <View style={s.dip}>
+      <View style={s.dipSide}>{left.map((i) => pin(i, 'l'))}</View>
+      <View style={s.dipBody}>
+        <View style={s.dipNotch} />
+      </View>
+      <View style={s.dipSide}>{right.map((i) => pin(i, 'r'))}</View>
+    </View>
   );
 }
 
@@ -347,12 +393,32 @@ export function Workbench({ navigation, route }: NativeStackScreenProps<Screens,
   const partStops = useMemo(() => [0, 320, 560] as const, []);
   // What floats over the desk sits above the tool bar.
   const above = TOOLS_HEIGHT + insets.bottom + 12;
-  const options = state.selection && state.selection.count === 1 ? (state.options ?? []) : [];
-  const cardStops = useMemo(
-    () => [0, CARD_HEAD + options.length * OPTION_ROW + (options.length ? 12 : 4)] as const,
-    [options.length],
-  );
-  useEffect(() => card.current?.go(showCard ? 1 : 0), [showCard, cardStops]);
+  const one = !!state.selection && state.selection.count === 1;
+  const options = one ? (state.options ?? []) : [];
+  const pins = one ? (state.pins ?? null) : null;
+  // The card holds only settings and pins: with neither, there's no card, just the buttons on the right.
+  const hasCard = options.length > 0 || !!pins;
+  const pinRows = pins ? (pins.layout === 'dip' ? pins.names.length / 2 : pins.names.length) : 0;
+  const sub = state.selection?.sub;
+  const cardStops = useMemo(() => {
+    const base = CARD_HEAD + (sub ? CARD_SUB : 0) + options.length * OPTION_ROW + (pins ? PINS_ROW : 0) + 8;
+    return pins ? [0, base, base + Math.min(pinRows * PIN_ROW + 12, 360)] : [0, base];
+  }, [options.length, pins, pinRows, sub]);
+  const [cardAt, setCardAt] = useState(0);
+  const [pinAt, setPinAt] = useState<number | null>(null);
+  // A new selection starts with its pins folded and none of them lit.
+  const selectionKey = `${state.selection?.title}|${state.selection?.ref}|${state.selection?.count}`;
+  useEffect(() => {
+    setPinAt(null);
+    send({ type: 'pin', index: null });
+  }, [selectionKey, send]);
+  useEffect(() => card.current?.go(showCard && hasCard ? 1 : 0), [showCard, hasCard, cardStops, selectionKey]);
+  const cardTop = showCard && hasCard ? (cardStops[cardAt] ?? cardStops[1]) : 0;
+  const tapPin = (i: number): void => {
+    const next = pinAt === i ? null : i;
+    setPinAt(next);
+    send({ type: 'pin', index: next });
+  };
   const uri = assets?.[0]?.localUri;
 
   return (
@@ -490,12 +556,36 @@ export function Workbench({ navigation, route }: NativeStackScreenProps<Screens,
             </Pressable>
           </Reanimated.View>
         )}
+        {showCard && (
+          <Reanimated.View entering={RISE} exiting={SINK} style={[s.rail, { bottom: above + cardTop }]}>
+            <Pressable
+              style={s.railBtn}
+              onPress={() => send({ type: 'rotate' })}
+              accessibilityLabel="Rotate"
+              android_ripple={{ color: C.press }}
+            >
+              <Icon name="rotate" color={C.ink} />
+            </Pressable>
+            <Pressable
+              style={[s.railBtn, s.railLine]}
+              onPress={() => send({ type: 'duplicate' })}
+              accessibilityLabel="Duplicate"
+              android_ripple={{ color: C.press }}
+            >
+              <Icon name="duplicate" color={C.ink} />
+            </Pressable>
+            <Pressable
+              style={[s.railBtn, s.railLine]}
+              onPress={() => send({ type: 'delete' })}
+              accessibilityLabel="Delete"
+              android_ripple={{ color: C.press }}
+            >
+              <Icon name="trash" color={C.bad} />
+            </Pressable>
+          </Reanimated.View>
+        )}
         {colours && (
-          <Reanimated.View
-            entering={RISE}
-            exiting={SINK}
-            style={[s.colours, { bottom: above + (showCard ? cardStops[1] : 0) }]}
-          >
+          <Reanimated.View entering={RISE} exiting={SINK} style={[s.colours, { bottom: above + cardTop }]}>
             {(Object.keys(WIRE) as WireColor[]).map((c) => (
               <Pressable
                 key={c}
@@ -516,19 +606,23 @@ export function Workbench({ navigation, route }: NativeStackScreenProps<Screens,
         ref={card}
         stops={cardStops}
         bottom={TOOLS_HEIGHT + insets.bottom}
-        onSettle={(i) => i === 0 && state.selection && send({ type: 'deselect' })}
+        onSettle={(i) => {
+          setCardAt(i);
+          if (i === 0 && state.selection && hasCard) send({ type: 'deselect' });
+        }}
         header={
           <View style={s.cardHead}>
-            <Text style={s.cardTitle} numberOfLines={1}>
-              {state.selection?.title ?? ''}
-            </Text>
-            <IconButton icon="rotate" label="Rotate" onPress={() => send({ type: 'rotate' })} />
-            <IconButton icon="duplicate" label="Duplicate" onPress={() => send({ type: 'duplicate' })} />
-            <IconButton icon="trash" label="Delete" onPress={() => send({ type: 'delete' })} />
+            <View style={s.cardTitleRow}>
+              <Text style={s.cardTitle} numberOfLines={1}>
+                {state.selection?.title ?? ''}
+              </Text>
+              {!!state.selection?.ref && <Text style={s.cardRef}>{state.selection.ref}</Text>}
+            </View>
+            {!!sub && <Text style={s.cardSub}>{sub}</Text>}
           </View>
         }
       >
-        <View style={s.options}>
+        <View>
           {options.map((o) => (
             <View key={o.id} style={s.option}>
               <Text style={s.optionLabel}>{o.label}</Text>
@@ -538,17 +632,43 @@ export function Workbench({ navigation, route }: NativeStackScreenProps<Screens,
                 overScrollMode="never"
                 contentContainerStyle={s.optionChoices}
               >
-                {o.choices.map((c) => (
-                  <Chip
-                    key={c.value}
-                    label={c.label}
-                    on={c.value === o.current}
-                    onPress={() => send({ type: 'option', id: o.id, value: c.value })}
-                  />
-                ))}
+                {o.choices.map((c) =>
+                  o.look === 'swatch' ? (
+                    <Pressable
+                      key={c.value}
+                      accessibilityLabel={c.label}
+                      style={[s.swatchBox, c.value === o.current && { borderColor: C.ink }]}
+                      onPress={() => send({ type: 'option', id: o.id, value: c.value })}
+                    >
+                      <View style={[s.swatch, { backgroundColor: c.color }]} />
+                    </Pressable>
+                  ) : (
+                    <Chip
+                      key={c.value}
+                      label={c.label}
+                      on={
+                        o.look === 'toggles'
+                          ? ((Number(o.current) >> Number(c.value)) & 1) === 1
+                          : c.value === o.current
+                      }
+                      onPress={() => send({ type: 'option', id: o.id, value: c.value })}
+                    />
+                  ),
+                )}
               </LegacyScrollView>
             </View>
           ))}
+          {pins && (
+            <>
+              <Pressable style={s.pinsFold} onPress={() => card.current?.go(cardAt === 2 ? 1 : 2)}>
+                <Text style={s.pinsFoldText}>Pins</Text>
+                <View style={{ transform: [{ rotate: cardAt === 2 ? '180deg' : '0deg' }] }}>
+                  <Icon name="chev" color={C.ink2} />
+                </View>
+              </Pressable>
+              <PinDiagram pins={pins} lit={pinAt} onPin={tapPin} />
+            </>
+          )}
         </View>
       </Sheet>
 
@@ -795,10 +915,61 @@ const s = StyleSheet.create({
   },
   tileName: { fontFamily: F.medium, fontSize: 14, color: C.ink, textAlign: 'center' },
   tileSub: { fontFamily: F.regular, fontSize: 12, color: C.ink3, textAlign: 'center' },
-  cardHead: { flexDirection: 'row', alignItems: 'center', paddingLeft: 16, paddingRight: 4, height: 48 },
-  cardTitle: { flex: 1, fontFamily: F.medium, fontSize: 16, color: C.ink },
-  options: { paddingBottom: 12 },
-  option: { height: 64, justifyContent: 'center' },
-  optionLabel: { fontFamily: F.regular, fontSize: 13, color: C.ink3, paddingLeft: 16, marginBottom: 6 },
-  optionChoices: { gap: 8, paddingHorizontal: 16 },
+  cardHead: { paddingHorizontal: 16, paddingBottom: 6, minHeight: 34, justifyContent: 'center' },
+  cardTitleRow: { flexDirection: 'row', alignItems: 'baseline', gap: 8 },
+  cardTitle: { flexShrink: 1, fontFamily: F.medium, fontSize: 16, color: C.ink },
+  cardRef: { fontFamily: F.regular, fontSize: 13, color: C.ink3 },
+  cardSub: { fontFamily: F.regular, fontSize: 13, color: C.ink3, marginTop: 1 },
+  // A setting: its name on the left, the choices beside it, scrolling sideways when they don't fit.
+  option: {
+    height: OPTION_ROW,
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderTopWidth: 1,
+    borderTopColor: C.line,
+  },
+  optionLabel: { width: 92, fontFamily: F.regular, fontSize: 13, color: C.ink2, paddingLeft: 16 },
+  optionChoices: { gap: 6, paddingRight: 16, alignItems: 'center' },
+  rail: {
+    position: 'absolute',
+    right: 10,
+    backgroundColor: C.card,
+    borderRadius: R.card,
+    borderWidth: 1,
+    borderColor: C.line2,
+    overflow: 'hidden',
+    elevation: 4,
+  },
+  railBtn: { width: 46, height: 46, alignItems: 'center', justifyContent: 'center' },
+  railLine: { borderTopWidth: 1, borderTopColor: C.line },
+  pinsFold: {
+    height: PINS_ROW,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    borderTopWidth: 1,
+    borderTopColor: C.line,
+  },
+  pinsFoldText: { fontFamily: F.regular, fontSize: 14, color: C.ink },
+  dip: { flexDirection: 'row', paddingHorizontal: 16, paddingBottom: 12, gap: 8 },
+  dipSide: { flex: 1 },
+  dipBody: { width: 52, borderWidth: 1.5, borderColor: C.ink, borderRadius: 3, alignItems: 'center' },
+  dipNotch: {
+    width: 14,
+    height: 7,
+    marginTop: -1.5,
+    borderWidth: 1.5,
+    borderTopWidth: 0,
+    borderColor: C.ink,
+    borderBottomLeftRadius: 7,
+    borderBottomRightRadius: 7,
+    backgroundColor: C.card,
+  },
+  pinList: { paddingHorizontal: 16, paddingBottom: 12 },
+  pin: { height: PIN_ROW, flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 4, borderRadius: 4 },
+  // The pin tapped: the same amber as its hole on the board.
+  pinLit: { backgroundColor: '#fbefd2' },
+  pinNum: { fontFamily: F.mono, fontSize: 11, color: C.ink3, minWidth: 16, textAlign: 'center' },
+  pinName: { fontFamily: F.regular, fontSize: 13, color: C.ink, flexShrink: 1 },
 });
