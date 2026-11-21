@@ -131,11 +131,11 @@ function Tool({
 }
 
 /**
- * A pin's name, with its bar (written Q̄0 with a combining macron) drawn as a line over the whole
+ * A pin's name, with its bar (written Q\u03040 with a combining macron) drawn as a line over the whole
  * name it covers, as datasheets do, rather than left to the font, which puts it over the wrong letter.
  */
 function PinName({ name }: { name: string }) {
-  const m = /([A-Za-z])̄([A-Za-z0-9]*)/.exec(name);
+  const m = /([A-Za-z])\u0304([A-Za-z0-9]*)/.exec(name);
   if (!m) {
     return (
       <Text style={s.pinName} numberOfLines={1}>
