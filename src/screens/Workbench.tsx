@@ -121,7 +121,8 @@ function Tool({
   const color = on ? C.ink : disabled ? C.line2 : C.ink2;
   return (
     <Pressable style={s.tool} onPress={onPress} disabled={disabled}>
-      <View style={[s.toolInner, on && s.toolOn]}>
+      <View style={s.toolInner}>
+        <View style={[s.toolTint, on && s.toolOn]} />
         <Icon name={icon} color={color} />
         <Text style={[s.toolText, { color }]}>{label}</Text>
       </View>
@@ -737,7 +738,8 @@ export function Workbench({ navigation, route }: NativeStackScreenProps<Screens,
         <Tool icon="chip" label="Parts" on={partsOpen} onPress={() => parts.current?.go(partsOpen ? 0 : 1)} />
         <Tool icon="wire" label="Wire" on={state.wire} onPress={() => send({ type: 'wire' })} />
         <Pressable style={s.tool} onPress={() => setColours((v) => !v)}>
-          <View style={[s.toolInner, colours && s.toolOn]}>
+          <View style={s.toolInner}>
+            <View style={[s.toolTint, colours && s.toolOn]} />
             <View style={[s.swatch, { backgroundColor: WIRE[state.color] }]} />
             <Text style={[s.toolText, colours && { color: C.ink }]}>Colour</Text>
           </View>
@@ -889,7 +891,19 @@ const s = StyleSheet.create({
     gap: 4,
   },
   // A soft tint, not a black block: the tool is on, the desk is still what's looked at.
-  toolOn: { backgroundColor: C.press },
+  // The tint is always there, rounded from the start, and only shows when the tool is on: Android drops
+  // the rounding of a view whose background colour is added after it was first drawn.
+  toolTint: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    top: 0,
+    bottom: 0,
+    borderRadius: 12,
+    backgroundColor: C.press,
+    opacity: 0,
+  },
+  toolOn: { opacity: 1 },
   toolText: { fontFamily: F.regular, fontSize: 12, color: C.ink2 },
   sheetTitle: { fontFamily: F.medium, fontSize: 16, color: C.ink, paddingHorizontal: 16, paddingBottom: 10 },
   partHead: {
