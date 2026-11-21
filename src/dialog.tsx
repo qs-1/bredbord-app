@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Animated, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { floor, onFloor } from './floor';
 import { Overlay } from './overlay';
 import { C, F } from './theme';
 import { EASE } from './ui';
@@ -123,6 +124,9 @@ function QuestionBox({ q }: { q: Question }) {
 
 function Notice({ text }: { text: string }) {
   const insets = useSafeAreaInsets();
+  // Above any open sheet, so it doesn't cover the sheet's buttons.
+  const [above, setAbove] = useState(floor);
+  useEffect(() => onFloor(() => setAbove(floor())), []);
   const a = useRef(new Animated.Value(0)).current;
   useEffect(() => {
     const anim = Animated.sequence([
@@ -140,7 +144,7 @@ function Notice({ text }: { text: string }) {
   }, [a, text]);
   return (
     <Overlay>
-      <View style={[s.noteWrap, { bottom: insets.bottom + 96 }]} pointerEvents="none">
+      <View style={[s.noteWrap, { bottom: Math.max(insets.bottom + 96, above + 12) }]} pointerEvents="none">
         <Animated.View
           style={[
             s.note,
