@@ -15,6 +15,7 @@ import {
   type StyleProp,
   type ViewStyle,
 } from 'react-native';
+import { floorKey, setFloor } from './floor';
 import { LegacyScrollView } from 'react-native-gesture-handler';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Overlay } from './overlay';
@@ -224,6 +225,12 @@ function Sheet({
   const lift = useRef(new Animated.Value(keyboard)).current;
   const [height, setHeight] = useState(0);
   const measured = height > 0;
+  // Notes shown while it's open sit above it.
+  const [key] = useState(floorKey);
+  useEffect(() => {
+    setFloor(key, open && measured ? height + keyboard : null);
+  }, [key, open, measured, height, keyboard]);
+  useEffect(() => () => setFloor(key, null), [key]);
 
   useEffect(() => {
     if (open) {

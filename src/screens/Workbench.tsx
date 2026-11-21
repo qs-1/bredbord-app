@@ -15,6 +15,7 @@ import {
   useWindowDimensions,
 } from 'react-native';
 import Reanimated, { FadeInDown, FadeOutDown } from 'react-native-reanimated';
+import { LegacyScrollView } from 'react-native-gesture-handler';
 import { SvgXml } from 'react-native-svg';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { WebView, type WebViewMessageEvent } from 'react-native-webview';
@@ -33,10 +34,26 @@ import { getSettings, useSettings } from '../settings';
 import { Sheet, type SheetHandle } from '../Sheet';
 import { C, F, R, WIRE, type WireColor } from '../theme';
 import { ShareSheet } from '../ShareSheet';
-import { BottomSheet, EASE, SheetHead } from '../ui';
+import { BottomSheet, Chip, EASE, SheetHead } from '../ui';
+
+/** A setting of the selected part, to choose from (the desk's `options`, src/embed-options.ts in the main project). */
+interface DeskOption {
+  id: string;
+  label: string;
+  /** 'choice' (one of), 'swatch' (one of, as colours), 'toggles' (each on or off: `current` is a bit mask). */
+  look?: 'choice' | 'swatch' | 'toggles';
+  choices: { value: string; label: string; color?: string }[];
+  current: string;
+}
+
+/** The selected part's pins, pin 1 first: 'dip' drawn as a chip from above, 'list' one under another. */
+interface DeskPins {
+  names: string[];
+  layout: 'dip' | 'list';
+}
 
 interface DeskState {
-  selection: { title: string; count: number } | null;
+  selection: { title: string; count: number; ref?: string; sub?: string } | null;
   task: string;
   wire: boolean;
   color: WireColor;
@@ -44,6 +61,10 @@ interface DeskState {
   canUndo: boolean;
   canRedo: boolean;
   top: boolean;
+  /** Settings of the one selected part; absent from desks built before they were sent. */
+  options?: DeskOption[];
+  /** The one selected part's pins, for its diagram. */
+  pins?: DeskPins | null;
 }
 
 const IDLE: DeskState = {
@@ -72,6 +93,13 @@ function partRows(columns: number): PartRow[] {
 
 const TOOLS_HEIGHT = 60;
 
+/** The selection sheet: its grip and title row, and each option's row (a label over its choices). */
+const CARD_HEAD = 58;
+const CARD_SUB = 20;
+const OPTION_ROW = 48;
+const PINS_ROW = 44;
+const PIN_ROW = 28;
+
 /** How the colours panel and the hint come and go. */
 const RISE = FadeInDown.duration(220);
 const SINK = FadeOutDown.duration(160);
@@ -93,11 +121,69 @@ function Tool({
   const color = on ? C.ink : disabled ? C.line2 : C.ink2;
   return (
     <Pressable style={s.tool} onPress={onPress} disabled={disabled}>
-      <View style={[s.toolInner, on && s.toolOn]}>
+      <View style={s.toolInner}>
+        <View style={[s.toolTint, on && s.toolOn]} />
         <Icon name={icon} color={color} />
         <Text style={[s.toolText, { color }]}>{label}</Text>
       </View>
     </Pressable>
+  );
+}
+
+/**
+ * A pin's name, with its bar (written Q\u03040 with a combining macron) drawn as a line over the whole
+ * name it covers, as datasheets do, rather than left to the font, which puts it over the wrong letter.
+ */
+function PinName({ name }: { name: string }) {
+  const m = /([A-Za-z])\u0304([A-Za-z0-9]*)/.exec(name);
+  if (!m) {
+    return (
+      <Text style={s.pinName} numberOfLines={1}>
+        {name}
+      </Text>
+    );
+  }
+  const before = name.slice(0, m.index);
+  const after = name.slice(m.index + m[0].length);
+  return (
+    <View style={s.pinNameRow}>
+      {!!before && <Text style={s.pinName}>{before}</Text>}
+      <View style={s.pinBar}>
+        <Text style={s.pinName}>{m[1] + m[2]}</Text>
+      </View>
+      {!!after && <Text style={s.pinName}>{after}</Text>}
+    </View>
+  );
+}
+
+/** A part's pins: a chip drawn from above (pin 1 top left, the notch at the top), or a list. A tap lights that pin's hole. */
+function PinDiagram({ pins, lit, onPin }: { pins: DeskPins; lit: number | null; onPin: (i: number) => void }) {
+  const pin = (i: number, side: 'l' | 'r' | 'list') => {
+    const num = <Text style={[s.pinNum, lit === i && { color: C.ink }]}>{i + 1}</Text>;
+    return (
+      <Pressable
+        key={i}
+        onPress={() => onPin(i)}
+        style={[s.pin, side === 'l' && { justifyContent: 'flex-end' }, lit === i && s.pinLit]}
+      >
+        {side !== 'l' && num}
+        <PinName name={pins.names[i]} />
+        {side === 'l' && num}
+      </Pressable>
+    );
+  };
+  if (pins.layout === 'list') return <View style={s.pinList}>{pins.names.map((_, i) => pin(i, 'list'))}</View>;
+  const half = pins.names.length / 2;
+  const left = Array.from({ length: half }, (_, k) => k);
+  const right = Array.from({ length: half }, (_, k) => pins.names.length - 1 - k);
+  return (
+    <View style={s.dip}>
+      <View style={s.dipSide}>{left.map((i) => pin(i, 'l'))}</View>
+      <View style={s.dipBody}>
+        <View style={s.dipNotch} />
+      </View>
+      <View style={s.dipSide}>{right.map((i) => pin(i, 'r'))}</View>
+    </View>
   );
 }
 
@@ -122,6 +208,8 @@ export function Workbench({ navigation, route }: NativeStackScreenProps<Screens,
   const card = useRef<SheetHandle>(null);
   const [state, setState] = useState<DeskState>(IDLE);
   const [partsOpen, setPartsOpen] = useState(false);
+  // The part picked from the parts sheet that's waiting to be put down, shown in the hint bar (a phone has no hover).
+  const [placing, setPlacing] = useState<Tile | null>(null);
   const [colours, setColours] = useState(false);
   // Framing the circuit's picture: the person moves the desk's view, and the picture keeps the 4:3 frame drawn over it.
   const [framing, setFraming] = useState(false);
@@ -308,8 +396,10 @@ export function Workbench({ navigation, route }: NativeStackScreenProps<Screens,
   };
 
   // The card comes up as a strip when something is selected and steps aside while something is put down.
+  useEffect(() => {
+    if (!state.task) setPlacing(null);
+  }, [state.task]);
   const showCard = !!state.selection && !state.task && !partsOpen;
-  useEffect(() => card.current?.go(showCard ? 1 : 0), [showCard]);
 
   // Back shuts what's open, one thing at a time, and then leaves.
   useEffect(() => {
@@ -328,7 +418,32 @@ export function Workbench({ navigation, route }: NativeStackScreenProps<Screens,
   const partStops = useMemo(() => [0, 320, 560] as const, []);
   // What floats over the desk sits above the tool bar.
   const above = TOOLS_HEIGHT + insets.bottom + 12;
-  const cardStops = useMemo(() => [0, 132] as const, []);
+  const one = !!state.selection && state.selection.count === 1;
+  const options = one ? (state.options ?? []) : [];
+  const pins = one ? (state.pins ?? null) : null;
+  // The card holds only settings and pins: with neither, there's no card, just the buttons on the right.
+  const hasCard = options.length > 0 || !!pins;
+  const pinRows = pins ? (pins.layout === 'dip' ? pins.names.length / 2 : pins.names.length) : 0;
+  const sub = state.selection?.sub;
+  const cardStops = useMemo(() => {
+    const base = CARD_HEAD + (sub ? CARD_SUB : 0) + options.length * OPTION_ROW + (pins ? PINS_ROW : 0) + 8;
+    return pins ? [0, base, base + Math.min(pinRows * PIN_ROW + 12, 360)] : [0, base];
+  }, [options.length, pins, pinRows, sub]);
+  const [cardAt, setCardAt] = useState(0);
+  const [pinAt, setPinAt] = useState<number | null>(null);
+  // A new selection starts with its pins folded and none of them lit.
+  const selectionKey = `${state.selection?.title}|${state.selection?.ref}|${state.selection?.count}`;
+  useEffect(() => {
+    setPinAt(null);
+    send({ type: 'pin', index: null });
+  }, [selectionKey, send]);
+  useEffect(() => card.current?.go(showCard && hasCard ? 1 : 0), [showCard, hasCard, cardStops, selectionKey]);
+  const cardTop = showCard && hasCard ? (cardStops[cardAt] ?? cardStops[1]) : 0;
+  const tapPin = (i: number): void => {
+    const next = pinAt === i ? null : i;
+    setPinAt(next);
+    send({ type: 'pin', index: next });
+  };
   const uri = assets?.[0]?.localUri;
 
   return (
@@ -448,18 +563,54 @@ export function Workbench({ navigation, route }: NativeStackScreenProps<Screens,
         )}
         {!!state.task && (
           <Reanimated.View entering={RISE} exiting={SINK} style={[s.hint, { bottom: above }]}>
-            <Text style={s.hintText}>{state.task}</Text>
+            {placing && (
+              <View style={s.hintThumb}>
+                <SvgXml xml={placing.svg} width={40} height={30} />
+              </View>
+            )}
+            <View style={s.hintBody}>
+              {placing && (
+                <Text style={s.hintName} numberOfLines={1}>
+                  {placing.name}
+                </Text>
+              )}
+              <Text style={[s.hintText, placing && s.hintTextSub]}>{state.task}</Text>
+            </View>
             <Pressable style={s.hintCancel} onPress={() => send({ type: 'cancel' })}>
               <Text style={s.hintCancelText}>Cancel</Text>
             </Pressable>
           </Reanimated.View>
         )}
+        {showCard && (
+          <Reanimated.View entering={RISE} exiting={SINK} style={[s.rail, { bottom: above + cardTop }]}>
+            <Pressable
+              style={s.railBtn}
+              onPress={() => send({ type: 'rotate' })}
+              accessibilityLabel="Rotate"
+              android_ripple={{ color: C.press }}
+            >
+              <Icon name="rotate" color={C.ink} />
+            </Pressable>
+            <Pressable
+              style={[s.railBtn, s.railLine]}
+              onPress={() => send({ type: 'duplicate' })}
+              accessibilityLabel="Duplicate"
+              android_ripple={{ color: C.press }}
+            >
+              <Icon name="duplicate" color={C.ink} />
+            </Pressable>
+            <Pressable
+              style={[s.railBtn, s.railLine]}
+              onPress={() => send({ type: 'delete' })}
+              accessibilityLabel="Delete"
+              android_ripple={{ color: C.press }}
+            >
+              <Icon name="trash" color={C.bad} />
+            </Pressable>
+          </Reanimated.View>
+        )}
         {colours && (
-          <Reanimated.View
-            entering={RISE}
-            exiting={SINK}
-            style={[s.colours, { bottom: above + (showCard ? cardStops[1] : 0) }]}
-          >
+          <Reanimated.View entering={RISE} exiting={SINK} style={[s.colours, { bottom: above + cardTop }]}>
             {(Object.keys(WIRE) as WireColor[]).map((c) => (
               <Pressable
                 key={c}
@@ -480,33 +631,69 @@ export function Workbench({ navigation, route }: NativeStackScreenProps<Screens,
         ref={card}
         stops={cardStops}
         bottom={TOOLS_HEIGHT + insets.bottom}
-        onSettle={(i) => i === 0 && state.selection && send({ type: 'deselect' })}
+        onSettle={(i) => {
+          setCardAt(i);
+          if (i === 0 && state.selection && hasCard) send({ type: 'deselect' });
+        }}
         header={
           <View style={s.cardHead}>
-            <Text style={s.cardTitle} numberOfLines={1}>
-              {state.selection?.title ?? ''}
-            </Text>
+            <View style={s.cardTitleRow}>
+              <Text style={s.cardTitle} numberOfLines={1}>
+                {state.selection?.title ?? ''}
+              </Text>
+              {!!state.selection?.ref && <Text style={s.cardRef}>{state.selection.ref}</Text>}
+            </View>
+            {!!sub && <Text style={s.cardSub}>{sub}</Text>}
           </View>
         }
       >
-        <View style={s.actions}>
-          {(
-            [
-              ['rotate', 'Rotate'],
-              ['duplicate', 'Duplicate'],
-              ['trash', 'Delete'],
-            ] as const
-          ).map(([icon, label]) => (
-            <Pressable
-              key={label}
-              style={s.action}
-              onPress={() => send({ type: icon === 'trash' ? 'delete' : icon })}
-              android_ripple={{ color: C.press }}
-            >
-              <Icon name={icon} color={C.ink} />
-              <Text style={s.actionText}>{label}</Text>
-            </Pressable>
+        <View>
+          {options.map((o) => (
+            <View key={o.id} style={s.option}>
+              <Text style={s.optionLabel}>{o.label}</Text>
+              <LegacyScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                overScrollMode="never"
+                contentContainerStyle={s.optionChoices}
+              >
+                {o.choices.map((c) =>
+                  o.look === 'swatch' ? (
+                    <Pressable
+                      key={c.value}
+                      accessibilityLabel={c.label}
+                      style={[s.swatchBox, c.value === o.current && { borderColor: C.ink }]}
+                      onPress={() => send({ type: 'option', id: o.id, value: c.value })}
+                    >
+                      <View style={[s.swatch, { backgroundColor: c.color }]} />
+                    </Pressable>
+                  ) : (
+                    <Chip
+                      key={c.value}
+                      label={c.label}
+                      on={
+                        o.look === 'toggles'
+                          ? ((Number(o.current) >> Number(c.value)) & 1) === 1
+                          : c.value === o.current
+                      }
+                      onPress={() => send({ type: 'option', id: o.id, value: c.value })}
+                    />
+                  ),
+                )}
+              </LegacyScrollView>
+            </View>
           ))}
+          {pins && (
+            <>
+              <Pressable style={s.pinsFold} onPress={() => card.current?.go(cardAt === 2 ? 1 : 2)}>
+                <Text style={s.pinsFoldText}>Pins</Text>
+                <View style={{ transform: [{ rotate: cardAt === 2 ? '180deg' : '0deg' }] }}>
+                  <Icon name="chev" color={C.ink2} />
+                </View>
+              </Pressable>
+              <PinDiagram pins={pins} lit={pinAt} onPin={tapPin} />
+            </>
+          )}
         </View>
       </Sheet>
 
@@ -533,6 +720,7 @@ export function Workbench({ navigation, route }: NativeStackScreenProps<Screens,
                       style={s.tile}
                       onPress={() => {
                         parts.current?.go(0);
+                        setPlacing(t);
                         send(t.send);
                       }}
                       android_ripple={{ color: C.press }}
@@ -574,7 +762,8 @@ export function Workbench({ navigation, route }: NativeStackScreenProps<Screens,
         <Tool icon="chip" label="Parts" on={partsOpen} onPress={() => parts.current?.go(partsOpen ? 0 : 1)} />
         <Tool icon="wire" label="Wire" on={state.wire} onPress={() => send({ type: 'wire' })} />
         <Pressable style={s.tool} onPress={() => setColours((v) => !v)}>
-          <View style={[s.toolInner, colours && s.toolOn]}>
+          <View style={s.toolInner}>
+            <View style={[s.toolTint, colours && s.toolOn]} />
             <View style={[s.swatch, { backgroundColor: WIRE[state.color] }]} />
             <Text style={[s.toolText, colours && { color: C.ink }]}>Colour</Text>
           </View>
@@ -666,7 +855,19 @@ const s = StyleSheet.create({
     paddingLeft: 16,
     paddingRight: 6,
   },
-  hintText: { flex: 1, fontFamily: F.regular, fontSize: 14, color: '#fff', paddingVertical: 10 },
+  hintThumb: {
+    width: 48,
+    height: 36,
+    borderRadius: 4,
+    backgroundColor: C.card,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 12,
+  },
+  hintBody: { flex: 1, paddingVertical: 8 },
+  hintName: { fontFamily: F.medium, fontSize: 14, color: '#fff' },
+  hintText: { fontFamily: F.regular, fontSize: 14, color: '#fff' },
+  hintTextSub: { fontSize: 13, color: '#d8d4cc' },
   hintCancel: { height: 36, paddingHorizontal: 12, justifyContent: 'center', borderRadius: 4 },
   hintCancelText: { fontFamily: F.medium, fontSize: 14, color: '#d8d4cc' },
   colours: {
@@ -714,7 +915,19 @@ const s = StyleSheet.create({
     gap: 4,
   },
   // A soft tint, not a black block: the tool is on, the desk is still what's looked at.
-  toolOn: { backgroundColor: C.press },
+  // The tint is always there, rounded from the start, and only shows when the tool is on: Android drops
+  // the rounding of a view whose background colour is added after it was first drawn.
+  toolTint: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    top: 0,
+    bottom: 0,
+    borderRadius: 12,
+    backgroundColor: C.press,
+    opacity: 0,
+  },
+  toolOn: { opacity: 1 },
   toolText: { fontFamily: F.regular, fontSize: 12, color: C.ink2 },
   sheetTitle: { fontFamily: F.medium, fontSize: 16, color: C.ink, paddingHorizontal: 16, paddingBottom: 10 },
   partHead: {
@@ -740,20 +953,63 @@ const s = StyleSheet.create({
   },
   tileName: { fontFamily: F.medium, fontSize: 14, color: C.ink, textAlign: 'center' },
   tileSub: { fontFamily: F.regular, fontSize: 12, color: C.ink3, textAlign: 'center' },
-  cardHead: { paddingHorizontal: 16, paddingBottom: 8 },
-  cardTitle: { fontFamily: F.medium, fontSize: 16, color: C.ink },
-  actions: { flexDirection: 'row', paddingHorizontal: 8, paddingBottom: 12 },
-  action: {
-    flex: 1,
-    height: 52,
-    marginHorizontal: 4,
-    borderRadius: R.control,
-    borderWidth: 1,
-    borderColor: C.line2,
+  cardHead: { paddingHorizontal: 16, paddingBottom: 6, minHeight: 34, justifyContent: 'center' },
+  cardTitleRow: { flexDirection: 'row', alignItems: 'baseline', gap: 8 },
+  cardTitle: { flexShrink: 1, fontFamily: F.medium, fontSize: 16, color: C.ink },
+  cardRef: { fontFamily: F.regular, fontSize: 13, color: C.ink3 },
+  cardSub: { fontFamily: F.regular, fontSize: 13, color: C.ink3, marginTop: 1 },
+  // A setting: its name on the left, the choices beside it, scrolling sideways when they don't fit.
+  option: {
+    height: OPTION_ROW,
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
+    borderTopWidth: 1,
+    borderTopColor: C.line,
   },
-  actionText: { fontFamily: F.medium, fontSize: 14, color: C.ink },
+  optionLabel: { width: 92, fontFamily: F.regular, fontSize: 13, color: C.ink2, paddingLeft: 16 },
+  optionChoices: { gap: 6, paddingRight: 16, alignItems: 'center' },
+  rail: {
+    position: 'absolute',
+    right: 10,
+    backgroundColor: C.card,
+    borderRadius: R.card,
+    borderWidth: 1,
+    borderColor: C.line2,
+    overflow: 'hidden',
+    elevation: 4,
+  },
+  railBtn: { width: 46, height: 46, alignItems: 'center', justifyContent: 'center' },
+  railLine: { borderTopWidth: 1, borderTopColor: C.line },
+  pinsFold: {
+    height: PINS_ROW,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    borderTopWidth: 1,
+    borderTopColor: C.line,
+  },
+  pinsFoldText: { fontFamily: F.regular, fontSize: 14, color: C.ink },
+  dip: { flexDirection: 'row', paddingHorizontal: 16, paddingBottom: 12, gap: 8 },
+  dipSide: { flex: 1 },
+  dipBody: { width: 52, borderWidth: 1.5, borderColor: C.ink, borderRadius: 3, alignItems: 'center' },
+  dipNotch: {
+    width: 14,
+    height: 7,
+    marginTop: -1.5,
+    borderWidth: 1.5,
+    borderTopWidth: 0,
+    borderColor: C.ink,
+    borderBottomLeftRadius: 7,
+    borderBottomRightRadius: 7,
+    backgroundColor: C.card,
+  },
+  pinList: { paddingHorizontal: 16, paddingBottom: 12 },
+  pin: { height: PIN_ROW, flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 4, borderRadius: 4 },
+  // The pin tapped: the same amber as its hole on the board.
+  pinLit: { backgroundColor: '#fbefd2' },
+  pinNum: { fontFamily: F.mono, fontSize: 11, color: C.ink3, minWidth: 16, textAlign: 'center' },
+  pinName: { fontFamily: F.regular, fontSize: 13, color: C.ink, flexShrink: 1 },
+  pinNameRow: { flexDirection: 'row', alignItems: 'center' },
+  pinBar: { borderTopWidth: 1, borderTopColor: C.ink, marginTop: 1 },
 });
